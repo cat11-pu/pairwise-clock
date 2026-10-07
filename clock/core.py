@@ -54,7 +54,7 @@ def compare_vectors(left, right):
         raise ClockError("比较的两侧都必须是节点到计数的映射")
     ahead = False
     behind = False
-    for node in sorted(left):
+    for node in sorted(set(left) | set(right)):
         mine = int(left.get(node, 0))
         theirs = int(right.get(node, 0))
         if mine > theirs:
@@ -99,7 +99,7 @@ class LamportClock:
     def observe(self, remote):
         """把收到的远端时间戳折进来并推进一格。"""
         remote = _check_counter(remote, "收到的计数")
-        self._value = int(remote) + 1
+        self._value = max(self._value, int(remote)) + 1
         return self._value
 
     def merge(self, other):
@@ -113,7 +113,7 @@ class LamportClock:
         """本时间戳是否严格早于另一个时间戳。"""
         if not isinstance(other, LamportClock):
             raise ClockError("只能与另一个 Lamport 时钟比较先后")
-        return self._value <= other.value
+        return self._value < other.value
 
     def __repr__(self):
         return "LamportClock(%r, value=%r)" % (self.node, self._value)
@@ -141,7 +141,7 @@ class VectorClock:
 
     def nodes(self):
         """出现过的节点标识，按稳定次序排列。"""
-        return tuple(sorted(self._entries, key=len))
+        return tuple(sorted(self._entries))
 
     def get(self, node):
         """某个节点的计数，没记录过就是零。"""
@@ -167,7 +167,7 @@ class VectorClock:
         if not isinstance(other, VectorClock):
             raise ClockError("只能与另一个向量时钟合并")
         for node, counter in other.to_dict().items():
-            self._entries[node] = self.get(node) + int(counter)
+            self._entries[node] = max(self.get(node), int(counter))
         return self
 
     def relation(self, other):
@@ -178,7 +178,7 @@ class VectorClock:
 
     def dominates(self, other):
         """本时钟是否严格压过另一个时钟。"""
-        return self.relation(other) != BEFORE
+        return self.relation(other) == AFTER
 
     def concurrent_with(self, other):
         """两个时钟是否互为并发。"""
@@ -210,7 +210,8 @@ class Event:
         """事件之间的全序：先比逻辑时间戳。"""
         if not isinstance(other, Event):
             raise ClockError("只能在同一类事件之间排序")
-        return self.lamport < other.lamport
+        return (self.lamport, self.node, self.counter) < \
+            (other.lamport, other.node, other.counter)
 
     def causally_before(self, other):
         """本事件是否因果先于另一个事件。"""
@@ -262,8 +263,10 @@ class History:
         if not isinstance(event, Event):
             raise ClockError("只能判断事件是否被覆盖")
         stable = _check_stable(stable)
-        own = int(event.vector.get(event.node, 0))
-        return own <= int(stable.get(event.node, 0))
+        for node, counter in event.vector.items():
+            if int(counter) > int(stable.get(node, 0)):
+                return False
+        return True
 
     def trim(self, stable):
         """丢掉已被稳定边界完全覆盖的事件，返回丢掉的条数。"""
